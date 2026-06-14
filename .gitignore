@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Scout
+data/
+dashboard/node_modules/
+dashboard/dist/
+validation/validation_set.json
