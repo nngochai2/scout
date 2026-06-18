@@ -1,7 +1,7 @@
 """CLI: run the Scout daily batch — fetch → triage → investigate → persist.
 
 Usage:
-    python scripts/run_batch.py [--limit N] [--triage-only]
+    python scripts/run_batch.py [--limit N] [--triage-only] [--no-docs]
 """
 import argparse
 import sys
@@ -18,16 +18,14 @@ from agent.triage import triage_batch
 from agent.investigate import investigate
 from agent.models import TriageVerdict
 from ingestion.freshdesk import FreshdeskAdapter
+from docs_mcp.client import DocsMcpClient
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scout daily triage batch")
     parser.add_argument("--limit", type=int, default=20, help="Max tickets to fetch (default 20)")
-    parser.add_argument(
-        "--triage-only",
-        action="store_true",
-        help="Run triage only; skip investigation",
-    )
+    parser.add_argument("--triage-only", action="store_true", help="Run triage only; skip investigation")
+    parser.add_argument("--no-docs", action="store_true", help="Skip docs-mcp (run without documentation search)")
     args = parser.parse_args()
 
     init_db()
@@ -66,19 +64,37 @@ def main() -> None:
     ticket_map = {t.id: t for t in tickets}
     print(f"\n--- Investigation ({len(to_investigate)} ticket(s)) ---")
 
-    for triage in to_investigate:
-        ticket = ticket_map.get(triage.ticket_id)
-        if ticket is None:
-            print(f"  [{triage.ticket_id}] ticket not found in fetch result — skipping")
-            continue
-
-        print(f"  [{ticket.id}] {ticket.title[:70]}")
+    docs_client = None
+    if not args.no_docs:
         try:
-            diagnosis = investigate(ticket, triage)
-            cause = diagnosis.root_cause or "(insufficient evidence)"
-            print(f"    confidence={diagnosis.confidence.value}  cause={cause[:100]}")
+            docs_client = DocsMcpClient()
+            docs_client.connect()
+            print("docs-mcp connected.\n")
         except Exception as exc:
-            print(f"    ERROR: {exc!r}")
+            print(f"docs-mcp unavailable ({exc!r}) — running without docs search.\n")
+            docs_client = None
+
+    try:
+        for triage in to_investigate:
+            ticket = ticket_map.get(triage.ticket_id)
+            if ticket is None:
+                print(f"  [{triage.ticket_id}] ticket not found in fetch result — skipping")
+                continue
+
+            print(f"  [{ticket.id}] {ticket.title[:70]}")
+            try:
+                diagnosis = investigate(
+                    ticket,
+                    triage,
+                    search_docs=docs_client.search_docs if docs_client else None,
+                )
+                cause = diagnosis.root_cause or "(insufficient evidence)"
+                print(f"    confidence={diagnosis.confidence.value}  cause={cause[:100]}")
+            except Exception as exc:
+                print(f"    ERROR: {exc!r}")
+    finally:
+        if docs_client:
+            docs_client.close()
 
     print("\nBatch complete.")
 
