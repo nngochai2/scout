@@ -222,3 +222,17 @@ data/
 dashboard/node_modules/
 dashboard/dist/
 validation/validation_set.json
+
+# Claude Code
+.claude/worktrees/
+.claude/settings.local.json
+
+# Playwright MCP runtime artifacts
+.playwright-mcp/
+
+# VS Code (root-level)
+.vscode/
+
+# Windows
+Thumbs.db
+desktop.ini
