@@ -5,7 +5,7 @@ const API = 'http://localhost:8000'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Route = 'overview' | 'dashboard' | 'cost' | 'validation' | 'flow'
+type Route = 'overview' | 'dashboard' | 'cost' | 'validation' | 'flow' | 'db'
 type TriageVerdict = 'investigate' | 'clarify' | 'insufficient_signal' | 'out_of_scope'
 type SourceType = 'DOC' | 'DB' | 'CODE' | 'ADO'
 type ConfLevel = 'High' | 'Medium' | 'Low' | 'Insufficient'
@@ -82,6 +82,7 @@ function Icon({ name, size = 16, style }: { name: string; size?: number; style?:
     timer: <><circle cx="12" cy="13" r="8"/><path d="M12 13V9M9 2h6"/></>,
     alert: <><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></>,
     flow: <><circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 12h4l6-5M7 12h4l6 5"/></>,
+    db: <><ellipse cx="12" cy="7" rx="8" ry="3.5"/><path d="M4 7v5c0 1.9 3.6 3.5 8 3.5s8-1.6 8-3.5V7"/><path d="M4 12v5c0 1.9 3.6 3.5 8 3.5s8-1.6 8-3.5v-5"/></>,
   }
   return <svg {...p}>{paths[name] ?? null}</svg>
 }
@@ -808,6 +809,128 @@ function ValidationView() {
   )
 }
 
+// ─── Database view ────────────────────────────────────────────────────────────
+
+const DB_TABLES = [
+  { name: 'tickets', label: 'Tickets' },
+  { name: 'triage_results', label: 'Triage results' },
+  { name: 'diagnoses', label: 'Diagnoses' },
+  { name: 'evidence_items', label: 'Evidence items' },
+  { name: 'stage_counts', label: 'Stage counts' },
+  { name: 'review_actions', label: 'Review actions' },
+]
+
+interface DbResult {
+  table: string; columns: string[]; rows: Record<string, unknown>[]
+  total: number; limit: number; offset: number
+}
+
+function DbCell({ val, col }: { val: unknown; col: string }) {
+  const [expanded, setExpanded] = useState(false)
+  if (val === null || val === undefined) return <span className="db-null">null</span>
+  const s = String(val)
+  const isId = col === 'id' || col.endsWith('_id')
+  const isLong = s.length > 80
+  return (
+    <span
+      className={isLong ? `db-cell-long ${expanded ? 'expanded' : ''}` : (isId ? 'pk' : '')}
+      title={isLong && !expanded ? s : undefined}
+      onClick={isLong ? () => setExpanded((x) => !x) : undefined}
+      style={isLong ? { cursor: 'pointer' } : undefined}
+    >
+      {s}
+    </span>
+  )
+}
+
+function DatabaseView() {
+  const [active, setActive] = useState('tickets')
+  const [data, setData] = useState<DbResult | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [counts, setCounts] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    DB_TABLES.forEach(({ name }) => {
+      fetch(`${API}/db/${name}?limit=0&offset=0`)
+        .then((r) => r.json())
+        .then((d: DbResult) => setCounts((c) => ({ ...c, [name]: d.total })))
+        .catch(() => {})
+    })
+  }, [])
+
+  useEffect(() => {
+    setLoading(true)
+    setData(null)
+    fetch(`${API}/db/${active}`)
+      .then((r) => r.json())
+      .then((d: DbResult) => { setData(d); setCounts((c) => ({ ...c, [active]: d.total })) })
+      .catch(() => setData(null))
+      .finally(() => setLoading(false))
+  }, [active])
+
+  return (
+    <div>
+      <div className="view-head">
+        <div>
+          <h1 className="view-title">Database</h1>
+          <p className="view-sub">Live read-only view of the Scout SQLite database.</p>
+        </div>
+      </div>
+      <div className="db-wrap">
+        <div className="db-tables">
+          {DB_TABLES.map(({ name, label }) => (
+            <button key={name} className={`db-table-btn ${active === name ? 'on' : ''}`}
+              onClick={() => setActive(name)}>
+              {label}
+              {counts[name] != null && <span className="db-n">{counts[name]}</span>}
+            </button>
+          ))}
+        </div>
+
+        <div className="card db-panel">
+          <div className="db-panel-head">
+            <span className="db-panel-title">{active}</span>
+            {data && <span className="db-panel-meta">{data.total} row{data.total !== 1 ? 's' : ''}</span>}
+            {loading && <span className="db-panel-meta">Loading…</span>}
+          </div>
+
+          {data && data.rows.length === 0 && (
+            <div className="db-empty">No rows yet in <code>{active}</code></div>
+          )}
+
+          {data && data.rows.length > 0 && (
+            <>
+              <div className="db-scroll">
+                <table className="db-table">
+                  <thead>
+                    <tr>{data.columns.map((c) => <th key={c}>{c}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {data.rows.map((row, i) => (
+                      <tr key={i}>
+                        {data.columns.map((c) => (
+                          <td key={c} className={c === 'id' ? 'pk' : c.endsWith('_id') ? 'fk' : ''}>
+                            <DbCell val={row[c]} col={c} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {data.total > data.rows.length && (
+                <div className="db-pagination">
+                  Showing first {data.rows.length} of {data.total} rows
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 const NAV: { k: Route; label: string; icon: string }[] = [
@@ -816,10 +939,11 @@ const NAV: { k: Route; label: string; icon: string }[] = [
   { k: 'cost', label: 'Token economics', icon: 'coins' },
   { k: 'validation', label: 'Validation', icon: 'shield' },
   { k: 'flow', label: 'Investigation Flow', icon: 'flow' },
+  { k: 'db', label: 'Database', icon: 'db' },
 ]
 const NAV_TITLE: Record<Route, string> = {
   overview: 'Overview', dashboard: 'Triage queue', cost: 'Token economics',
-  validation: 'Validation', flow: 'Investigation Flow',
+  validation: 'Validation', flow: 'Investigation Flow', db: 'Database',
 }
 
 function Sidebar({ route, setRoute, theme, setTheme, pending, onNav }: {
@@ -907,6 +1031,7 @@ export default function App() {
             {route === 'dashboard' && <TicketsView />}
             {route === 'cost' && <CostView tickets={tickets} />}
             {route === 'validation' && <ValidationView />}
+            {route === 'db' && <DatabaseView />}
           </div>
         )}
       </main>

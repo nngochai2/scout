@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect, text
 import httpx
 import json
 import os
@@ -168,3 +169,33 @@ def submit_review(ticket_id: str, action: ReviewAction):
         session.add(row)
         session.commit()
     return {"ok": True}
+
+
+# ─── Database browser ─────────────────────────────────────────────────────────
+
+_ALLOWED_TABLES = {
+    "tickets", "triage_results", "diagnoses",
+    "evidence_items", "stage_counts", "review_actions",
+}
+
+
+@app.get("/db/{table}")
+def browse_table(table: str, limit: int = 200, offset: int = 0):
+    if table not in _ALLOWED_TABLES:
+        raise HTTPException(status_code=404, detail=f"Unknown table '{table}'")
+    inspector = inspect(engine)
+    columns = [col["name"] for col in inspector.get_columns(table)]
+    with engine.connect() as conn:
+        total = conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar() or 0
+        rows = conn.execute(
+            text(f"SELECT * FROM {table} LIMIT :lim OFFSET :off"),
+            {"lim": limit, "off": offset},
+        ).fetchall()
+    return {
+        "table": table,
+        "columns": columns,
+        "rows": [dict(zip(columns, row)) for row in rows],
+        "total": int(total),
+        "limit": limit,
+        "offset": offset,
+    }
