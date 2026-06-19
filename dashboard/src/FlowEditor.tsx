@@ -380,12 +380,64 @@ function rfToFlow(nodes: Node[], edges: Edge[]): InvestigationFlow {
   return { nodes: flowNodes, entry_node_id: entryNode?.id ?? '' }
 }
 
+function topoLayout(flow: InvestigationFlow): Record<string, { x: number; y: number }> {
+  // Build children map
+  const children: Record<string, string[]> = {}
+  for (const fn of flow.nodes) {
+    children[fn.id] = fn.edges.map((e) => e.target_node_id)
+  }
+
+  // BFS from entry, assigning each node its maximum depth (longest-path level)
+  // so that all parents sit above all children.
+  const levels: Record<string, number> = {}
+  const queue: Array<{ id: string; depth: number }> = [{ id: flow.entry_node_id, depth: 0 }]
+  const maxDepth = flow.nodes.length  // cycle guard
+
+  while (queue.length > 0) {
+    const { id, depth } = queue.shift()!
+    if (depth > maxDepth) continue  // cycle guard
+    if ((levels[id] ?? -1) < depth) {
+      levels[id] = depth
+      for (const child of (children[id] ?? [])) {
+        queue.push({ id: child, depth: depth + 1 })
+      }
+    }
+  }
+
+  // Any nodes unreachable from entry get level 0
+  for (const fn of flow.nodes) {
+    if (!(fn.id in levels)) levels[fn.id] = 0
+  }
+
+  // Group node IDs by level
+  const byLevel: Record<number, string[]> = {}
+  for (const [id, lvl] of Object.entries(levels)) {
+    ;(byLevel[lvl] ??= []).push(id)
+  }
+
+  const H_GAP = 240   // horizontal spacing between siblings
+  const V_GAP = 160   // vertical spacing between levels
+  const CENTER_X = 500
+  const START_Y = 60
+
+  const positions: Record<string, { x: number; y: number }> = {}
+  for (const [lvlStr, ids] of Object.entries(byLevel)) {
+    const lvl = parseInt(lvlStr)
+    const span = (ids.length - 1) * H_GAP
+    ids.forEach((id, i) => {
+      positions[id] = { x: CENTER_X - span / 2 + i * H_GAP, y: START_Y + lvl * V_GAP }
+    })
+  }
+  return positions
+}
+
 function flowToRf(flow: InvestigationFlow): { nodes: Node[]; edges: Edge[] } {
+  const positions = topoLayout(flow)
   const nodes: Node[] = flow.nodes.map((fn, i) => {
-    const base = { id: fn.id, position: { x: 100 + (i % 4) * 220, y: 80 + Math.floor(i / 4) * 160 } }
-    if (fn.type === 'tool') return { ...base, type: 'ToolNode', data: { mcp: fn.config?.mcp ?? 'oracle', label: fn.config?.label ?? '' } satisfies ToolNodeData }
-    if (fn.type === 'branch') return { ...base, type: 'BranchNode', data: {} satisfies BranchNodeData }
-    return { ...base, type: 'ConcludeNode', data: {} satisfies ConcludeNodeData }
+    const pos = positions[fn.id] ?? { x: 100 + i * 220, y: 60 }
+    if (fn.type === 'tool') return { id: fn.id, type: 'ToolNode', position: pos, data: { mcp: fn.config?.mcp ?? 'oracle', label: fn.config?.label ?? '' } satisfies ToolNodeData }
+    if (fn.type === 'branch') return { id: fn.id, type: 'BranchNode', position: pos, data: {} satisfies BranchNodeData }
+    return { id: fn.id, type: 'ConcludeNode', position: pos, data: {} satisfies ConcludeNodeData }
   })
   const edges: Edge[] = flow.nodes.flatMap((fn) =>
     fn.edges.map((be) => ({
@@ -532,7 +584,8 @@ function FlowCanvas() {
               onDrop={onDrop} onDragOver={onDragOver}
               deleteKeyCode={['Delete', 'Backspace']}
               multiSelectionKeyCode="Shift"
-              fitView>
+              fitView
+              fitViewOptions={{ padding: 0.3, duration: 300 }}>
               <Background color="var(--border)" />
               <Controls />
               <MiniMap />
