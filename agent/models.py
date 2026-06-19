@@ -21,6 +21,7 @@ class EvidenceType(str, Enum):
     DOC = "DOC"
     DB = "DB"
     CODE = "CODE"
+    ADO = "ADO"
 
 
 class InvestigationStage(str, Enum):
