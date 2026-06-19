@@ -1,0 +1,39 @@
+{
+  "nodes": [
+    {
+      "id": "conclude",
+      "type": "conclude",
+      "config": null,
+      "edges": []
+    },
+    {
+      "id": "node-1",
+      "type": "tool",
+      "config": {
+        "mcp": "code_graph",
+        "label": "Code Graph"
+      },
+      "edges": [
+        {
+          "target_node_id": "conclude",
+          "condition": "always"
+        }
+      ]
+    },
+    {
+      "id": "node-2",
+      "type": "tool",
+      "config": {
+        "mcp": "oracle",
+        "label": "Oracle"
+      },
+      "edges": [
+        {
+          "target_node_id": "node-1",
+          "condition": "always"
+        }
+      ]
+    }
+  ],
+  "entry_node_id": "node-2"
+}
