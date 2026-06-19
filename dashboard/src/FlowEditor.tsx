@@ -407,8 +407,6 @@ function validateFlow(nodes: Node[], edges: Edge[]): string | null {
   return null
 }
 
-let nodeCounter = 1
-
 // ─── Canvas ───────────────────────────────────────────────────────────────────
 
 function FlowCanvas() {
@@ -453,7 +451,7 @@ function FlowCanvas() {
     if (!raw) return
     const item: DragItem = JSON.parse(raw)
     const position = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-    const id = `node-${nodeCounter++}`
+    const id = `node-${crypto.randomUUID().slice(0, 8)}`
     let newNode: Node
     if (item.kind === 'tool' && item.mcp)
       newNode = { id, type: 'ToolNode', position, data: { mcp: item.mcp, label: MCP_LABELS[item.mcp] } satisfies ToolNodeData }
