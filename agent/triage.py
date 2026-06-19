@@ -107,7 +107,13 @@ def triage_batch(tickets: list[Ticket]) -> list[TriageResult]:
             msg = item.result.message
 
             try:
-                data = json.loads(msg.content[0].text)
+                raw_text = msg.content[0].text.strip()
+                if raw_text.startswith("```"):
+                    raw_text = raw_text.split("```", 2)[1]
+                    if raw_text.startswith("json"):
+                        raw_text = raw_text[4:]
+                    raw_text = raw_text.rsplit("```", 1)[0].strip()
+                data = json.loads(raw_text)
                 triage = TriageResult(
                     ticket_id=tid,
                     verdict=TriageVerdict(data["verdict"]),
@@ -116,7 +122,7 @@ def triage_batch(tickets: list[Ticket]) -> list[TriageResult]:
                 )
             except Exception as exc:
                 raw = msg.content[0].text if msg.content else "(empty)"
-                print(f"  [{tid}] parse error ({exc!r}): {raw[:200]}")
+                print(f"  [{tid}] parse error ({type(exc).__name__}: {exc}): {raw[:200]}")
                 triage = TriageResult(
                     ticket_id=tid,
                     verdict=TriageVerdict.INSUFFICIENT_SIGNAL,
