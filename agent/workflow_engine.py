@@ -5,10 +5,11 @@ no database access, no Claude calls unless a real evaluate_fn is passed.
 Callers (run_batch.py) are responsible for persisting results.
 """
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Callable
 
-import anthropic
+import litellm
 
 from agent.flow import BranchEdge, InvestigationFlow
 from agent.models import (
@@ -156,27 +157,30 @@ def _disconnected(mcp_name: str) -> McpFn:
 
 
 _EVALUATE_TOOL = {
-    "name": "record_findings",
-    "description": "Record the root cause, confidence, and supporting evidence found in the tool result.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "confidence": {"type": "string", "enum": ["high", "medium", "low", "insufficient"]},
-            "root_cause": {"type": "string"},
-            "evidence": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "source_type": {"type": "string", "enum": ["DOC", "DB", "CODE", "ADO"]},
-                        "reference": {"type": "string"},
-                        "passage": {"type": "string"},
+    "type": "function",
+    "function": {
+        "name": "record_findings",
+        "description": "Record the root cause, confidence, and supporting evidence found in the tool result.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "confidence": {"type": "string", "enum": ["high", "medium", "low", "insufficient"]},
+                "root_cause": {"type": "string"},
+                "evidence": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source_type": {"type": "string", "enum": ["DOC", "DB", "CODE", "ADO"]},
+                            "reference": {"type": "string"},
+                            "passage": {"type": "string"},
+                        },
+                        "required": ["source_type", "reference", "passage"],
                     },
-                    "required": ["source_type", "reference", "passage"],
                 },
             },
+            "required": ["confidence", "evidence"],
         },
-        "required": ["confidence", "evidence"],
     },
 }
 
@@ -192,25 +196,31 @@ Be conservative — only rate HIGH if the tool result directly explains the issu
 
 
 def _real_evaluate(ticket_context: str, node_label: str, tool_result: str) -> EvaluateResult:
-    """Production Evaluate step: single Claude call to extract structured findings."""
-    client = anthropic.Anthropic()
+    """Production Evaluate step: single LiteLLM call to extract structured findings."""
+    model = os.getenv("LLM_MODEL", "")
     user_msg = (
         f"## Ticket\n{ticket_context}\n\n"
         f"## Tool: {node_label}\n{tool_result}"
     )
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+    response = litellm.completion(
+        model=model,
         max_tokens=1024,
-        system=_EVALUATE_SYSTEM,
+        messages=[
+            {"role": "system", "content": _EVALUATE_SYSTEM},
+            {"role": "user", "content": user_msg},
+        ],
         tools=[_EVALUATE_TOOL],
-        tool_choice={"type": "any"},
-        messages=[{"role": "user", "content": user_msg}],
+        tool_choice={"type": "function", "function": {"name": "record_findings"}},
     )
 
     usage = response.usage
-    for block in response.content:
-        if block.type == "tool_use" and block.name == "record_findings":
-            inp = block.input
+    input_tokens = usage.prompt_tokens
+    output_tokens = usage.completion_tokens
+
+    tool_calls = response.choices[0].message.tool_calls or []
+    for call in tool_calls:
+        if call.function.name == "record_findings":
+            inp = json.loads(call.function.arguments)
             evidence = [
                 Evidence(
                     source_type=EvidenceType(e["source_type"]),
@@ -223,14 +233,14 @@ def _real_evaluate(ticket_context: str, node_label: str, tool_result: str) -> Ev
                 confidence=Confidence(inp["confidence"]),
                 root_cause=inp.get("root_cause"),
                 evidence=evidence,
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             )
 
     return EvaluateResult(
         confidence=Confidence.INSUFFICIENT,
         root_cause=None,
         evidence=[],
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )

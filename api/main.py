@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 
+from dotenv import set_key
+
 from agent.database import init_db, engine, TicketRow, TriageResultRow, DiagnosisRow, EvidenceItemRow, StageCountRow, ReviewActionRow
 from agent.models import TriageVerdict, ReviewAction
 import agent.flow as flow_module
@@ -29,6 +31,83 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ─── LLM config ───────────────────────────────────────────────────────────────
+
+_ENV_PATH = str(Path(__file__).parent.parent / ".env")
+
+_PROVIDER_KEY_MAP = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+}
+
+
+@app.get("/llm/config")
+def get_llm_config():
+    import litellm
+    provider = os.getenv("LLM_PROVIDER")
+    model = os.getenv("LLM_MODEL")
+    key_present = bool(os.getenv(_PROVIDER_KEY_MAP.get(provider or "", ""), "")) if provider else False
+    pricing = litellm.model_cost.get(model or "", {})
+    return {
+        "provider": provider,
+        "model": model,
+        "api_key_set": key_present,
+        "input_cost_per_token": pricing.get("input_cost_per_token", 0.00000025),
+        "output_cost_per_token": pricing.get("output_cost_per_token", 0.00000125),
+    }
+
+
+@app.put("/llm/config")
+def put_llm_config(body: dict):
+    provider = body.get("provider", "").strip()
+    model = body.get("model", "").strip()
+    api_key = body.get("api_key", "").strip()
+
+    if not provider:
+        raise HTTPException(status_code=422, detail="provider is required")
+
+    set_key(_ENV_PATH, "LLM_PROVIDER", provider)
+    os.environ["LLM_PROVIDER"] = provider
+
+    if model:
+        set_key(_ENV_PATH, "LLM_MODEL", model)
+        os.environ["LLM_MODEL"] = model
+
+    if api_key and provider in _PROVIDER_KEY_MAP:
+        env_key = _PROVIDER_KEY_MAP[provider]
+        set_key(_ENV_PATH, env_key, api_key)
+        os.environ[env_key] = api_key
+
+    return get_llm_config()
+
+
+@app.get("/llm/models")
+def get_llm_models(provider: str):
+    import litellm
+    if provider == "anthropic":
+        models = sorted(litellm.models_by_provider.get("anthropic", []))
+        return {"provider": provider, "models": models}
+
+    # OpenAI-compatible providers: fetch live from /v1/models
+    base_urls = {"openai": "https://api.openai.com", "deepseek": "https://api.deepseek.com"}
+    key_names = {"openai": "OPENAI_API_KEY", "deepseek": "DEEPSEEK_API_KEY"}
+    base_url = base_urls.get(provider)
+    api_key = os.getenv(key_names.get(provider, ""))
+    if not base_url or not api_key:
+        raise HTTPException(status_code=400, detail=f"Unknown provider or missing API key: {provider}")
+
+    try:
+        with httpx.Client(timeout=10.0) as http:
+            resp = http.get(f"{base_url}/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+            resp.raise_for_status()
+            data = resp.json()
+            models = sorted(m["id"] for m in data.get("data", []))
+            return {"provider": provider, "models": models}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not fetch models: {exc}")
 
 
 # ─── MCP config ───────────────────────────────────────────────────────────────
