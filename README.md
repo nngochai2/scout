@@ -152,15 +152,3 @@ python -m pytest tests/ -q
 25 tests covering the mock adapter, flow data model, API endpoints, SSE client allowlist and connection behaviour, and the workflow engine routing logic.
 
 ---
-
-## Key decisions
-
-| Decision | Choice | ADR |
-|---|---|---|
-| Investigation model | Deterministic Workflow Engine over multi-turn tool_use loop | 0003 |
-| Document retrieval | NAA Knowledge Graph MCP (Neo4j) over ChromaDB vector store | 0004 |
-| Database queries | NAA Oracle MCP over Scout-owned db-mcp | 0005 |
-| Flow persistence | JSON file (`data/flow.json`) | 0006 |
-| Flow Editor canvas | React Flow (`@xyflow/react`) | 0007 |
-| Knowledge Graph transport | SSE (NAA shared server) over stdio | 0008 |
-| Code search | NAA Code Graph MCP (jQAssistant → Neo4j) over ripgrep | 0009 |
