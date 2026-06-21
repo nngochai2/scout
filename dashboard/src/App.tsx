@@ -5,11 +5,19 @@ const API = 'http://localhost:8000'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Route = 'overview' | 'dashboard' | 'cost' | 'validation' | 'flow' | 'db'
+type Route = 'overview' | 'dashboard' | 'cost' | 'validation' | 'flow' | 'db' | 'settings'
 type TriageVerdict = 'investigate' | 'clarify' | 'insufficient_signal' | 'out_of_scope'
 type SourceType = 'DOC' | 'DB' | 'CODE' | 'ADO'
 type ConfLevel = 'High' | 'Medium' | 'Low' | 'Insufficient'
 type ConfKey = 'high' | 'med' | 'low'
+
+interface LlmConfig {
+  provider: string | null
+  model: string | null
+  api_key_set: boolean
+  input_cost_per_token: number
+  output_cost_per_token: number
+}
 
 interface Evidence { source_type: SourceType; reference: string; passage: string }
 interface Triage { verdict: TriageVerdict; summary: string | null; clarifying_question: string | null }
@@ -42,9 +50,8 @@ function totalTokens(costs: Record<string, StageCost>) {
   return Object.values(costs).reduce((s, c) => s + c.input + c.output, 0)
 }
 
-function totalCostUSD(costs: Record<string, StageCost>) {
-  const tok = totalTokens(costs)
-  return tok * 0.00000025 // haiku-level estimate
+function totalCostUSD(costs: Record<string, StageCost>, inputRate = 0.00000025, outputRate = 0.00000125) {
+  return Object.values(costs).reduce((s, c) => s + c.input * inputRate + c.output * outputRate, 0)
 }
 
 const SOURCE_ICON: Record<SourceType, string> = { DOC: 'log', DB: 'metric', CODE: 'code', ADO: 'ticket' }
@@ -699,23 +706,23 @@ function OverviewView({ tickets, onGoTriage }: { tickets: Ticket[]; onGoTriage: 
 
 // ─── Cost View ────────────────────────────────────────────────────────────────
 
-function CostView({ tickets }: { tickets: Ticket[] }) {
+function CostView({ tickets, inputRate, outputRate }: { tickets: Ticket[]; inputRate: number; outputRate: number }) {
   const stageAgg = useMemo(() => {
     const m: Record<string, { tokens: number; cost: number; runs: number }> = {}
     tickets.forEach((t) =>
       Object.entries(t.stage_costs).forEach(([stage, cost]) => {
         m[stage] = m[stage] ?? { tokens: 0, cost: 0, runs: 0 }
         m[stage].tokens += cost.input + cost.output
-        m[stage].cost += (cost.input + cost.output) * 0.00000025
+        m[stage].cost += cost.input * inputRate + cost.output * outputRate
         m[stage].runs += 1
       })
     )
     return Object.entries(m).sort((a, b) => b[1].tokens - a[1].tokens)
-  }, [tickets])
+  }, [tickets, inputRate, outputRate])
 
   const maxTokens = Math.max(...stageAgg.map(([, s]) => s.tokens), 1)
   const totalTok = tickets.reduce((s, t) => s + totalTokens(t.stage_costs), 0)
-  const totalCost = tickets.reduce((s, t) => s + totalCostUSD(t.stage_costs), 0)
+  const totalCost = tickets.reduce((s, t) => s + totalCostUSD(t.stage_costs, inputRate, outputRate), 0)
 
   const ranked = [...tickets].sort((a, b) => totalTokens(b.stage_costs) - totalTokens(a.stage_costs)).slice(0, 10)
   const maxTok = Math.max(...ranked.map((t) => totalTokens(t.stage_costs)), 1)
@@ -931,6 +938,161 @@ function DatabaseView() {
   )
 }
 
+// ─── Settings View ────────────────────────────────────────────────────────────
+
+const PROVIDERS = ['anthropic', 'openai', 'deepseek'] as const
+type Provider = typeof PROVIDERS[number]
+
+function SettingsView({ onSaved }: { onSaved: (cfg: LlmConfig) => void }) {
+  const [cfg, setCfg] = useState<LlmConfig | null>(null)
+  const [provider, setProvider] = useState<Provider>('anthropic')
+  const [model, setModel] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [models, setModels] = useState<string[]>([])
+  const [fetchingModels, setFetchingModels] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch(`${API}/llm/config`).then(r => r.json()).then((d: LlmConfig) => {
+      setCfg(d)
+      if (d.provider) setProvider(d.provider as Provider)
+      if (d.model) setModel(d.model)
+    }).catch(() => {})
+  }, [])
+
+  async function fetchModels() {
+    if (!apiKey.trim()) return
+    setFetchingModels(true)
+    setError(null)
+    try {
+      const r = await fetch(`${API}/llm/models?provider=${provider}`)
+      if (!r.ok) throw new Error(await r.text())
+      const data = await r.json()
+      setModels(data.models ?? [])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setFetchingModels(false)
+    }
+  }
+
+  async function save() {
+    setSaving(true)
+    setError(null)
+    try {
+      const r = await fetch(`${API}/llm/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, model, api_key: apiKey }),
+      })
+      if (!r.ok) throw new Error(await r.text())
+      const updated: LlmConfig = await r.json()
+      setCfg(updated)
+      onSaved(updated)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2500)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const providerLabel: Record<Provider, string> = {
+    anthropic: 'Anthropic',
+    openai: 'OpenAI',
+    deepseek: 'DeepSeek',
+  }
+  const placeholders: Record<Provider, string> = {
+    anthropic: 'claude-haiku-4-5-20251001',
+    openai: 'gpt-4o-mini',
+    deepseek: 'deepseek/deepseek-chat',
+  }
+
+  return (
+    <div>
+      <div className="view-head">
+        <div>
+          <h1 className="view-title">Settings</h1>
+          <p className="view-sub">Configure the LLM provider used for triage and investigation.</p>
+        </div>
+      </div>
+
+      {cfg && !cfg.provider && (
+        <div style={{ padding: '12px 16px', marginBottom: 20, border: '1px solid var(--low)', borderRadius: 'var(--radius)', background: 'var(--low-soft)', color: 'var(--low)', fontSize: 13 }}>
+          No provider configured. Scout will not run until you save a provider below.
+        </div>
+      )}
+      {cfg?.provider && (
+        <div style={{ padding: '12px 16px', marginBottom: 20, border: '1px solid var(--border)', borderRadius: 'var(--radius)', background: 'var(--panel-2)', fontSize: 13, color: 'var(--text-2)' }}>
+          Active: <strong style={{ color: 'var(--text-1)' }}>{cfg.provider}</strong> / <span className="mono">{cfg.model}</span>
+          {cfg.api_key_set ? <span style={{ color: 'var(--high)', marginLeft: 10 }}>key set</span> : <span style={{ color: 'var(--low)', marginLeft: 10 }}>no key</span>}
+        </div>
+      )}
+
+      <div className="card" style={{ maxWidth: 520, padding: '28px 28px 24px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Provider</span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {PROVIDERS.map(p => (
+                <button key={p}
+                  onClick={() => { setProvider(p); setModel(''); setModels([]) }}
+                  style={{
+                    flex: 1, padding: '8px 0', borderRadius: 'var(--radius)',
+                    border: `1.5px solid ${provider === p ? 'var(--accent)' : 'var(--border)'}`,
+                    background: provider === p ? 'var(--accent-soft, color-mix(in srgb, var(--accent) 12%, transparent))' : 'var(--panel-2)',
+                    color: provider === p ? 'var(--accent)' : 'var(--text-2)',
+                    fontWeight: provider === p ? 700 : 400, fontSize: 13, cursor: 'pointer',
+                  }}>{providerLabel[p]}</button>
+              ))}
+            </div>
+          </label>
+
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '.05em' }}>API Key</span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+                placeholder={`${providerLabel[provider]} API key`}
+                style={{ flex: 1, padding: '8px 10px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--panel-3)', color: 'var(--text-1)', fontSize: 13 }} />
+              <button onClick={fetchModels} disabled={!apiKey.trim() || fetchingModels}
+                style={{ padding: '8px 14px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--panel-3)', color: 'var(--text-2)', fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                {fetchingModels ? '…' : 'Fetch models'}
+              </button>
+            </div>
+          </label>
+
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Model</span>
+            {models.length > 0 ? (
+              <select value={model} onChange={e => setModel(e.target.value)}
+                style={{ padding: '8px 10px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--panel-3)', color: 'var(--text-1)', fontSize: 13 }}>
+                <option value="">— select a model —</option>
+                {models.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            ) : (
+              <input value={model} onChange={e => setModel(e.target.value)}
+                placeholder={placeholders[provider]}
+                style={{ padding: '8px 10px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--panel-3)', color: 'var(--text-1)', fontSize: 13 }} />
+            )}
+            {models.length === 0 && <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>Enter your API key and click "Fetch models" to populate the dropdown.</span>}
+          </label>
+
+          {error && <div style={{ fontSize: 12, color: 'var(--low)', padding: '8px 10px', background: 'var(--low-soft)', borderRadius: 'var(--radius)' }}>{error}</div>}
+
+          <button onClick={save} disabled={saving || !provider || !model}
+            style={{ padding: '10px', borderRadius: 'var(--radius)', border: 'none', background: 'var(--accent)', color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer', opacity: (saving || !model) ? 0.5 : 1 }}>
+            {saving ? 'Saving…' : saved ? 'Saved' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 const NAV: { k: Route; label: string; icon: string }[] = [
@@ -940,10 +1102,11 @@ const NAV: { k: Route; label: string; icon: string }[] = [
   { k: 'validation', label: 'Validation', icon: 'shield' },
   { k: 'flow', label: 'Investigation Flow', icon: 'flow' },
   { k: 'db', label: 'Database', icon: 'db' },
+  { k: 'settings', label: 'Settings', icon: 'spark' },
 ]
 const NAV_TITLE: Record<Route, string> = {
   overview: 'Overview', dashboard: 'Triage queue', cost: 'Token economics',
-  validation: 'Validation', flow: 'Investigation Flow', db: 'Database',
+  validation: 'Validation', flow: 'Investigation Flow', db: 'Database', settings: 'Settings',
 }
 
 function Sidebar({ route, setRoute, theme, setTheme, pending, onNav }: {
@@ -993,6 +1156,10 @@ export default function App() {
   const [theme, setThemeRaw] = useState<string>(pref.theme ?? 'dark')
   const [navOpen, setNavOpen] = useState(true)
   const [tickets, setTickets] = useState<Ticket[]>([])
+  const [llmCfg, setLlmCfg] = useState<LlmConfig>({
+    provider: null, model: null, api_key_set: false,
+    input_cost_per_token: 0.00000025, output_cost_per_token: 0.00000125,
+  })
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
@@ -1001,6 +1168,7 @@ export default function App() {
 
   useEffect(() => {
     fetch(`${API}/tickets`).then((r) => r.json()).then(setTickets).catch(() => {})
+    fetch(`${API}/llm/config`).then((r) => r.json()).then(setLlmCfg).catch(() => {})
   }, [])
 
   const setTheme = (t: string) => setThemeRaw(t)
@@ -1029,9 +1197,10 @@ export default function App() {
           <div className="main-inner">
             {route === 'overview' && <OverviewView tickets={tickets} onGoTriage={() => setRoute('dashboard')} />}
             {route === 'dashboard' && <TicketsView />}
-            {route === 'cost' && <CostView tickets={tickets} />}
+            {route === 'cost' && <CostView tickets={tickets} inputRate={llmCfg.input_cost_per_token} outputRate={llmCfg.output_cost_per_token} />}
             {route === 'validation' && <ValidationView />}
             {route === 'db' && <DatabaseView />}
+            {route === 'settings' && <SettingsView onSaved={setLlmCfg} />}
           </div>
         )}
       </main>
