@@ -11,10 +11,17 @@ type SourceType = 'DOC' | 'DB' | 'CODE' | 'ADO'
 type ConfLevel = 'High' | 'Medium' | 'Low' | 'Insufficient'
 type ConfKey = 'high' | 'med' | 'low'
 
+interface ServiceDeskConfig {
+  provider: string | null
+  domain: string | null
+  api_key_set: boolean
+}
+
 interface LlmConfig {
   provider: string | null
   model: string | null
   api_key_set: boolean
+  pricing_available: boolean
   input_cost_per_token: number
   output_cost_per_token: number
 }
@@ -706,7 +713,7 @@ function OverviewView({ tickets, onGoTriage }: { tickets: Ticket[]; onGoTriage: 
 
 // ─── Cost View ────────────────────────────────────────────────────────────────
 
-function CostView({ tickets, inputRate, outputRate }: { tickets: Ticket[]; inputRate: number; outputRate: number }) {
+function CostView({ tickets, inputRate, outputRate, pricingAvailable }: { tickets: Ticket[]; inputRate: number; outputRate: number; pricingAvailable: boolean }) {
   const stageAgg = useMemo(() => {
     const m: Record<string, { tokens: number; cost: number; runs: number }> = {}
     tickets.forEach((t) =>
@@ -744,10 +751,19 @@ function CostView({ tickets, inputRate, outputRate }: { tickets: Ticket[]; input
             <div className="cost-hero-main">
               <div className="cost-hero-spent">
                 <span className="cost-hero-label">Estimated spend this run</span>
-                <span className="cost-hero-num mono tnum">${totalCost.toFixed(4)}</span>
+                {pricingAvailable
+                  ? <span className="cost-hero-num mono tnum">${totalCost.toFixed(4)}</span>
+                  : <span className="cost-hero-num mono tnum" style={{ color: 'var(--text-3)', fontSize: 16 }}>pricing unavailable</span>}
                 <span className="cost-hero-meta mono">{(totalTok / 1000).toFixed(1)}k tokens · {tickets.length} tickets</span>
               </div>
             </div>
+            {!pricingAvailable && (
+              <div style={{ padding: '8px 20px 14px', fontSize: 12, color: 'var(--text-3)' }}>
+                Token counts are accurate. Cost estimates require a model known to LiteLLM's pricing table — check{' '}
+                <a href="https://models.litellm.ai" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>models.litellm.ai</a>{' '}
+                for supported models.
+              </div>
+            )}
           </div>
 
           {stageAgg.length > 0 && (
@@ -940,7 +956,7 @@ function DatabaseView() {
 
 // ─── Settings View ────────────────────────────────────────────────────────────
 
-const PROVIDERS = ['anthropic', 'openai', 'deepseek'] as const
+const PROVIDERS = ['anthropic', 'openai', 'deepseek', 'moonshot'] as const
 type Provider = typeof PROVIDERS[number]
 
 function SettingsView({ onSaved }: { onSaved: (cfg: LlmConfig) => void }) {
@@ -954,11 +970,22 @@ function SettingsView({ onSaved }: { onSaved: (cfg: LlmConfig) => void }) {
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const [sdCfg, setSdCfg] = useState<ServiceDeskConfig | null>(null)
+  const [sdDomain, setSdDomain] = useState('')
+  const [sdApiKey, setSdApiKey] = useState('')
+  const [sdSaving, setSdSaving] = useState(false)
+  const [sdSaved, setSdSaved] = useState(false)
+  const [sdError, setSdError] = useState<string | null>(null)
+
   useEffect(() => {
     fetch(`${API}/llm/config`).then(r => r.json()).then((d: LlmConfig) => {
       setCfg(d)
       if (d.provider) setProvider(d.provider as Provider)
       if (d.model) setModel(d.model)
+    }).catch(() => {})
+    fetch(`${API}/servicedesk/config`).then(r => r.json()).then((d: ServiceDeskConfig) => {
+      setSdCfg(d)
+      if (d.domain) setSdDomain(d.domain)
     }).catch(() => {})
   }, [])
 
@@ -1000,15 +1027,47 @@ function SettingsView({ onSaved }: { onSaved: (cfg: LlmConfig) => void }) {
     }
   }
 
+  async function sdSave() {
+    setSdSaving(true)
+    setSdError(null)
+    try {
+      const r = await fetch(`${API}/servicedesk/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'freshdesk', domain: sdDomain, api_key: sdApiKey }),
+      })
+      if (!r.ok) throw new Error(await r.text())
+      setSdCfg(await r.json())
+      setSdSaved(true)
+      setTimeout(() => setSdSaved(false), 2500)
+    } catch (e) {
+      setSdError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSdSaving(false)
+    }
+  }
+
   const providerLabel: Record<Provider, string> = {
     anthropic: 'Anthropic',
     openai: 'OpenAI',
     deepseek: 'DeepSeek',
+    moonshot: 'Moonshot',
   }
   const placeholders: Record<Provider, string> = {
     anthropic: 'claude-haiku-4-5-20251001',
     openai: 'gpt-4o-mini',
     deepseek: 'deepseek/deepseek-chat',
+    moonshot: 'moonshot/kimi-k2.6',
+  }
+
+  const fieldLabel = (text: string) => (
+    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '.06em' }}>{text}</span>
+  )
+
+  const inputStyle: React.CSSProperties = {
+    padding: '8px 10px', borderRadius: 'var(--radius)',
+    border: '1px solid var(--border)', background: 'var(--panel-3)',
+    color: 'var(--text-1)', fontSize: 13, width: '100%', boxSizing: 'border-box',
   }
 
   return (
@@ -1016,78 +1075,121 @@ function SettingsView({ onSaved }: { onSaved: (cfg: LlmConfig) => void }) {
       <div className="view-head">
         <div>
           <h1 className="view-title">Settings</h1>
-          <p className="view-sub">Configure the LLM provider used for triage and investigation.</p>
+          <p className="view-sub">Configure the LLM provider and service desk credentials.</p>
         </div>
       </div>
 
-      {cfg && !cfg.provider && (
-        <div style={{ padding: '12px 16px', marginBottom: 20, border: '1px solid var(--low)', borderRadius: 'var(--radius)', background: 'var(--low-soft)', color: 'var(--low)', fontSize: 13 }}>
-          No provider configured. Scout will not run until you save a provider below.
+      <div style={{ maxWidth: 580, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+        {/* ── LLM Provider card ── */}
+        <div className="card" style={{ overflow: 'hidden' }}>
+          <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 13, fontWeight: 700 }}>LLM Provider</span>
+            {cfg?.provider
+              ? <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                  <span className="mono">{cfg.provider}</span> / <span className="mono">{cfg.model}</span>
+                  <span style={{ marginLeft: 8, color: cfg.api_key_set ? 'var(--high)' : 'var(--low)', fontWeight: 600 }}>
+                    {cfg.api_key_set ? '● key set' : '● no key'}
+                  </span>
+                </span>
+              : <span style={{ fontSize: 12, color: 'var(--low)', fontWeight: 600 }}>● not configured</span>}
+          </div>
+
+          <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {fieldLabel('Provider')}
+              <div style={{ display: 'flex', gap: 8 }}>
+                {PROVIDERS.map(p => (
+                  <button key={p}
+                    onClick={() => { setProvider(p); setModel(''); setModels([]) }}
+                    style={{
+                      flex: 1, padding: '8px 0', borderRadius: 'var(--radius)',
+                      border: `1.5px solid ${provider === p ? 'var(--accent)' : 'var(--border)'}`,
+                      background: provider === p ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'var(--panel-2)',
+                      color: provider === p ? 'var(--accent)' : 'var(--text-2)',
+                      fontWeight: provider === p ? 700 : 400, fontSize: 13, cursor: 'pointer',
+                    }}>{providerLabel[p]}</button>
+                ))}
+              </div>
+            </label>
+
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {fieldLabel('API Key')}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+                  placeholder={`${providerLabel[provider]} API key`} style={{ ...inputStyle, flex: 1, width: 'auto' }} />
+                <button onClick={fetchModels} disabled={!apiKey.trim() || fetchingModels}
+                  style={{ padding: '8px 14px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--panel-3)', color: 'var(--text-2)', fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                  {fetchingModels ? '…' : 'Fetch models'}
+                </button>
+              </div>
+            </label>
+
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {fieldLabel('Model')}
+              {models.length > 0
+                ? <select value={model} onChange={e => setModel(e.target.value)} style={inputStyle}>
+                    <option value="">— select a model —</option>
+                    {models.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                : <input value={model} onChange={e => setModel(e.target.value)}
+                    placeholder={placeholders[provider]} style={inputStyle} />}
+              {models.length === 0 && <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>Enter your API key and click "Fetch models" to populate the dropdown.</span>}
+            </label>
+
+            {error && <div style={{ fontSize: 12, color: 'var(--low)', padding: '8px 10px', background: 'var(--low-soft)', borderRadius: 'var(--radius)' }}>{error}</div>}
+
+            <button onClick={save} disabled={saving || !provider || !model}
+              style={{ padding: '9px', borderRadius: 'var(--radius)', border: 'none', background: 'var(--accent)', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', opacity: (saving || !model) ? 0.5 : 1, alignSelf: 'flex-end', minWidth: 80 }}>
+              {saving ? 'Saving…' : saved ? 'Saved' : 'Save'}
+            </button>
+          </div>
         </div>
-      )}
-      {cfg?.provider && (
-        <div style={{ padding: '12px 16px', marginBottom: 20, border: '1px solid var(--border)', borderRadius: 'var(--radius)', background: 'var(--panel-2)', fontSize: 13, color: 'var(--text-2)' }}>
-          Active: <strong style={{ color: 'var(--text-1)' }}>{cfg.provider}</strong> / <span className="mono">{cfg.model}</span>
-          {cfg.api_key_set ? <span style={{ color: 'var(--high)', marginLeft: 10 }}>key set</span> : <span style={{ color: 'var(--low)', marginLeft: 10 }}>no key</span>}
+
+        {/* ── Service Desk card ── */}
+        <div className="card" style={{ overflow: 'hidden' }}>
+          <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 13, fontWeight: 700 }}>Service Desk</span>
+            {sdCfg?.provider
+              ? <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                  <span className="mono">Freshdesk</span>
+                  {sdCfg.domain && <> / <span className="mono">{sdCfg.domain}</span></>}
+                  <span style={{ marginLeft: 8, color: sdCfg.api_key_set ? 'var(--high)' : 'var(--low)', fontWeight: 600 }}>
+                    {sdCfg.api_key_set ? '● key set' : '● no key'}
+                  </span>
+                </span>
+              : <span style={{ fontSize: 12, color: 'var(--low)', fontWeight: 600 }}>● not configured</span>}
+          </div>
+
+          <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {fieldLabel('Provider')}
+              <div style={{ padding: '8px 10px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--panel-2)', fontSize: 13, color: 'var(--text-2)' }}>
+                Freshdesk
+              </div>
+            </label>
+
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {fieldLabel('Domain')}
+              <input value={sdDomain} onChange={e => setSdDomain(e.target.value)}
+                placeholder="yourcompany.freshdesk.com" style={inputStyle} />
+            </label>
+
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {fieldLabel('API Key')}
+              <input type="password" value={sdApiKey} onChange={e => setSdApiKey(e.target.value)}
+                placeholder="Freshdesk API key" style={inputStyle} />
+            </label>
+
+            {sdError && <div style={{ fontSize: 12, color: 'var(--low)', padding: '8px 10px', background: 'var(--low-soft)', borderRadius: 'var(--radius)' }}>{sdError}</div>}
+
+            <button onClick={sdSave} disabled={sdSaving || !sdDomain}
+              style={{ padding: '9px', borderRadius: 'var(--radius)', border: 'none', background: 'var(--accent)', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', opacity: (sdSaving || !sdDomain) ? 0.5 : 1, alignSelf: 'flex-end', minWidth: 80 }}>
+              {sdSaving ? 'Saving…' : sdSaved ? 'Saved' : 'Save'}
+            </button>
+          </div>
         </div>
-      )}
 
-      <div className="card" style={{ maxWidth: 520, padding: '28px 28px 24px' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Provider</span>
-            <div style={{ display: 'flex', gap: 8 }}>
-              {PROVIDERS.map(p => (
-                <button key={p}
-                  onClick={() => { setProvider(p); setModel(''); setModels([]) }}
-                  style={{
-                    flex: 1, padding: '8px 0', borderRadius: 'var(--radius)',
-                    border: `1.5px solid ${provider === p ? 'var(--accent)' : 'var(--border)'}`,
-                    background: provider === p ? 'var(--accent-soft, color-mix(in srgb, var(--accent) 12%, transparent))' : 'var(--panel-2)',
-                    color: provider === p ? 'var(--accent)' : 'var(--text-2)',
-                    fontWeight: provider === p ? 700 : 400, fontSize: 13, cursor: 'pointer',
-                  }}>{providerLabel[p]}</button>
-              ))}
-            </div>
-          </label>
-
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '.05em' }}>API Key</span>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-                placeholder={`${providerLabel[provider]} API key`}
-                style={{ flex: 1, padding: '8px 10px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--panel-3)', color: 'var(--text-1)', fontSize: 13 }} />
-              <button onClick={fetchModels} disabled={!apiKey.trim() || fetchingModels}
-                style={{ padding: '8px 14px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--panel-3)', color: 'var(--text-2)', fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                {fetchingModels ? '…' : 'Fetch models'}
-              </button>
-            </div>
-          </label>
-
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Model</span>
-            {models.length > 0 ? (
-              <select value={model} onChange={e => setModel(e.target.value)}
-                style={{ padding: '8px 10px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--panel-3)', color: 'var(--text-1)', fontSize: 13 }}>
-                <option value="">— select a model —</option>
-                {models.map(m => <option key={m} value={m}>{m}</option>)}
-              </select>
-            ) : (
-              <input value={model} onChange={e => setModel(e.target.value)}
-                placeholder={placeholders[provider]}
-                style={{ padding: '8px 10px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--panel-3)', color: 'var(--text-1)', fontSize: 13 }} />
-            )}
-            {models.length === 0 && <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>Enter your API key and click "Fetch models" to populate the dropdown.</span>}
-          </label>
-
-          {error && <div style={{ fontSize: 12, color: 'var(--low)', padding: '8px 10px', background: 'var(--low-soft)', borderRadius: 'var(--radius)' }}>{error}</div>}
-
-          <button onClick={save} disabled={saving || !provider || !model}
-            style={{ padding: '10px', borderRadius: 'var(--radius)', border: 'none', background: 'var(--accent)', color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer', opacity: (saving || !model) ? 0.5 : 1 }}>
-            {saving ? 'Saving…' : saved ? 'Saved' : 'Save'}
-          </button>
-        </div>
       </div>
     </div>
   )
@@ -1157,7 +1259,7 @@ export default function App() {
   const [navOpen, setNavOpen] = useState(true)
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [llmCfg, setLlmCfg] = useState<LlmConfig>({
-    provider: null, model: null, api_key_set: false,
+    provider: null, model: null, api_key_set: false, pricing_available: true,
     input_cost_per_token: 0.00000025, output_cost_per_token: 0.00000125,
   })
 
@@ -1197,7 +1299,7 @@ export default function App() {
           <div className="main-inner">
             {route === 'overview' && <OverviewView tickets={tickets} onGoTriage={() => setRoute('dashboard')} />}
             {route === 'dashboard' && <TicketsView />}
-            {route === 'cost' && <CostView tickets={tickets} inputRate={llmCfg.input_cost_per_token} outputRate={llmCfg.output_cost_per_token} />}
+            {route === 'cost' && <CostView tickets={tickets} inputRate={llmCfg.input_cost_per_token} outputRate={llmCfg.output_cost_per_token} pricingAvailable={llmCfg.pricing_available} />}
             {route === 'validation' && <ValidationView />}
             {route === 'db' && <DatabaseView />}
             {route === 'settings' && <SettingsView onSaved={setLlmCfg} />}

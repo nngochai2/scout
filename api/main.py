@@ -41,6 +41,7 @@ _PROVIDER_KEY_MAP = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "moonshot": "MOONSHOT_API_KEY",
 }
 
 
@@ -51,10 +52,12 @@ def get_llm_config():
     model = os.getenv("LLM_MODEL")
     key_present = bool(os.getenv(_PROVIDER_KEY_MAP.get(provider or "", ""), "")) if provider else False
     pricing = litellm.model_cost.get(model or "", {})
+    pricing_available = bool(pricing)
     return {
         "provider": provider,
         "model": model,
         "api_key_set": key_present,
+        "pricing_available": pricing_available,
         "input_cost_per_token": pricing.get("input_cost_per_token", 0.00000025),
         "output_cost_per_token": pricing.get("output_cost_per_token", 0.00000125),
     }
@@ -84,6 +87,36 @@ def put_llm_config(body: dict):
     return get_llm_config()
 
 
+@app.get("/servicedesk/config")
+def get_servicedesk_config():
+    provider = os.getenv("SERVICEDESK_PROVIDER")
+    domain = os.getenv("FRESHDESK_DOMAIN") if provider == "freshdesk" else None
+    api_key_set = bool(os.getenv("FRESHDESK_API_KEY")) if provider == "freshdesk" else False
+    return {"provider": provider, "domain": domain, "api_key_set": api_key_set}
+
+
+@app.put("/servicedesk/config")
+def put_servicedesk_config(body: dict):
+    provider = body.get("provider", "").strip()
+    if not provider:
+        raise HTTPException(status_code=422, detail="provider is required")
+
+    set_key(_ENV_PATH, "SERVICEDESK_PROVIDER", provider)
+    os.environ["SERVICEDESK_PROVIDER"] = provider
+
+    if provider == "freshdesk":
+        domain = body.get("domain", "").strip()
+        api_key = body.get("api_key", "").strip()
+        if domain:
+            set_key(_ENV_PATH, "FRESHDESK_DOMAIN", domain)
+            os.environ["FRESHDESK_DOMAIN"] = domain
+        if api_key:
+            set_key(_ENV_PATH, "FRESHDESK_API_KEY", api_key)
+            os.environ["FRESHDESK_API_KEY"] = api_key
+
+    return get_servicedesk_config()
+
+
 @app.get("/llm/models")
 def get_llm_models(provider: str):
     import litellm
@@ -92,8 +125,8 @@ def get_llm_models(provider: str):
         return {"provider": provider, "models": models}
 
     # OpenAI-compatible providers: fetch live from /v1/models
-    base_urls = {"openai": "https://api.openai.com", "deepseek": "https://api.deepseek.com"}
-    key_names = {"openai": "OPENAI_API_KEY", "deepseek": "DEEPSEEK_API_KEY"}
+    base_urls = {"openai": "https://api.openai.com", "deepseek": "https://api.deepseek.com", "moonshot": "https://api.moonshot.ai/v1"}
+    key_names = {"openai": "OPENAI_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "moonshot": "MOONSHOT_API_KEY"}
     base_url = base_urls.get(provider)
     api_key = os.getenv(key_names.get(provider, ""))
     if not base_url or not api_key:
