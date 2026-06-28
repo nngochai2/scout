@@ -20,6 +20,7 @@ interface ServiceDeskConfig {
 interface LlmConfig {
   provider: string | null
   model: string | null
+  base_url: string
   api_key_set: boolean
   pricing_available: boolean
   input_cost_per_token: number
@@ -964,6 +965,7 @@ function SettingsView({ onSaved }: { onSaved: (cfg: LlmConfig) => void }) {
   const [provider, setProvider] = useState<Provider>('anthropic')
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
   const [models, setModels] = useState<string[]>([])
   const [fetchingModels, setFetchingModels] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -982,6 +984,7 @@ function SettingsView({ onSaved }: { onSaved: (cfg: LlmConfig) => void }) {
       setCfg(d)
       if (d.provider) setProvider(d.provider as Provider)
       if (d.model) setModel(d.model)
+      if (d.base_url) setBaseUrl(d.base_url)
     }).catch(() => {})
     fetch(`${API}/servicedesk/config`).then(r => r.json()).then((d: ServiceDeskConfig) => {
       setSdCfg(d)
@@ -994,7 +997,7 @@ function SettingsView({ onSaved }: { onSaved: (cfg: LlmConfig) => void }) {
     setFetchingModels(true)
     setError(null)
     try {
-      const r = await fetch(`${API}/llm/models?provider=${provider}&api_key=${encodeURIComponent(apiKey)}`)
+      const r = await fetch(`${API}/llm/models?provider=${provider}&api_key=${encodeURIComponent(apiKey)}&base_url=${encodeURIComponent(baseUrl)}`)
       if (!r.ok) throw new Error(await r.text())
       const data = await r.json()
       setModels(data.models ?? [])
@@ -1012,7 +1015,7 @@ function SettingsView({ onSaved }: { onSaved: (cfg: LlmConfig) => void }) {
       const r = await fetch(`${API}/llm/config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider, model, api_key: apiKey }),
+        body: JSON.stringify({ provider, model, api_key: apiKey, base_url: baseUrl }),
       })
       if (!r.ok) throw new Error(await r.text())
       const updated: LlmConfig = await r.json()
@@ -1101,7 +1104,7 @@ function SettingsView({ onSaved }: { onSaved: (cfg: LlmConfig) => void }) {
               <div style={{ display: 'flex', gap: 8 }}>
                 {PROVIDERS.map(p => (
                   <button key={p}
-                    onClick={() => { setProvider(p); setModel(''); setModels([]) }}
+                    onClick={() => { setProvider(p); setModel(''); setModels([]); setBaseUrl('') }}
                     style={{
                       flex: 1, padding: '8px 0', borderRadius: 'var(--radius)',
                       border: `1.5px solid ${provider === p ? 'var(--accent)' : 'var(--border)'}`,
@@ -1124,6 +1127,16 @@ function SettingsView({ onSaved }: { onSaved: (cfg: LlmConfig) => void }) {
                 </button>
               </div>
             </label>
+
+            {provider !== 'anthropic' && (
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {fieldLabel('Base URL (optional)')}
+                <input value={baseUrl} onChange={e => setBaseUrl(e.target.value)}
+                  placeholder="Leave blank to use the default public endpoint"
+                  style={inputStyle} />
+                <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>Set this if your organisation uses a custom API gateway.</span>
+              </label>
+            )}
 
             <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {fieldLabel('Model')}
@@ -1259,7 +1272,7 @@ export default function App() {
   const [navOpen, setNavOpen] = useState(true)
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [llmCfg, setLlmCfg] = useState<LlmConfig>({
-    provider: null, model: null, api_key_set: false, pricing_available: true,
+    provider: null, model: null, base_url: '', api_key_set: false, pricing_available: true,
     input_cost_per_token: 0.00000025, output_cost_per_token: 0.00000125,
   })
 

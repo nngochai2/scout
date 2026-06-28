@@ -70,6 +70,9 @@ def triage_batch(tickets: list[Ticket]) -> list[TriageResult]:
                 ))
 
             try:
+                extra = {}
+                if base_url := os.getenv("LLM_BASE_URL", ""):
+                    extra["api_base"] = base_url
                 response = litellm.completion(
                     model=model,
                     max_tokens=512,
@@ -77,6 +80,7 @@ def triage_batch(tickets: list[Ticket]) -> list[TriageResult]:
                         {"role": "system", "content": _SYSTEM},
                         {"role": "user", "content": _user_message(ticket)},
                     ],
+                    **extra,
                 )
                 raw_text = response.choices[0].message.content.strip()
                 if raw_text.startswith("```"):

@@ -56,6 +56,7 @@ def get_llm_config():
     return {
         "provider": provider,
         "model": model,
+        "base_url": os.getenv("LLM_BASE_URL", ""),
         "api_key_set": key_present,
         "pricing_available": pricing_available,
         "input_cost_per_token": pricing.get("input_cost_per_token", 0.00000025),
@@ -78,6 +79,10 @@ def put_llm_config(body: dict):
     if model:
         set_key(_ENV_PATH, "LLM_MODEL", model)
         os.environ["LLM_MODEL"] = model
+
+    base_url = body.get("base_url", "").strip()
+    set_key(_ENV_PATH, "LLM_BASE_URL", base_url)
+    os.environ["LLM_BASE_URL"] = base_url
 
     if api_key and provider in _PROVIDER_KEY_MAP:
         env_key = _PROVIDER_KEY_MAP[provider]
@@ -118,23 +123,23 @@ def put_servicedesk_config(body: dict):
 
 
 @app.get("/llm/models")
-def get_llm_models(provider: str, api_key: str = ""):
+def get_llm_models(provider: str, api_key: str = "", base_url: str = ""):
     import litellm
     if provider == "anthropic":
         models = sorted(litellm.models_by_provider.get("anthropic", []))
         return {"provider": provider, "models": models}
 
     # OpenAI-compatible providers: fetch live from /v1/models
-    base_urls = {"openai": "https://api.openai.com", "deepseek": "https://api.deepseek.com", "moonshot": "https://api.moonshot.ai"}
+    default_base_urls = {"openai": "https://api.openai.com", "deepseek": "https://api.deepseek.com", "moonshot": "https://api.moonshot.ai"}
     key_names = {"openai": "OPENAI_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "moonshot": "MOONSHOT_API_KEY"}
-    base_url = base_urls.get(provider)
+    resolved_base_url = base_url or os.getenv("LLM_BASE_URL", "") or default_base_urls.get(provider)
     resolved_key = api_key or os.getenv(key_names.get(provider, ""), "")
-    if not base_url or not resolved_key:
+    if not resolved_base_url or not resolved_key:
         raise HTTPException(status_code=400, detail=f"Unknown provider or missing API key: {provider}")
 
     try:
         with httpx.Client(timeout=10.0) as http:
-            resp = http.get(f"{base_url}/v1/models", headers={"Authorization": f"Bearer {resolved_key}"})
+            resp = http.get(f"{resolved_base_url}/v1/models", headers={"Authorization": f"Bearer {resolved_key}"})
             resp.raise_for_status()
             data = resp.json()
             models = sorted(m["id"] for m in data.get("data", []))

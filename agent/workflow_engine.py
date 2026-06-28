@@ -202,6 +202,9 @@ def _real_evaluate(ticket_context: str, node_label: str, tool_result: str) -> Ev
         f"## Ticket\n{ticket_context}\n\n"
         f"## Tool: {node_label}\n{tool_result}"
     )
+    extra = {}
+    if base_url := os.getenv("LLM_BASE_URL", ""):
+        extra["api_base"] = base_url
     response = litellm.completion(
         model=model,
         max_tokens=1024,
@@ -211,6 +214,7 @@ def _real_evaluate(ticket_context: str, node_label: str, tool_result: str) -> Ev
         ],
         tools=[_EVALUATE_TOOL],
         tool_choice={"type": "function", "function": {"name": "record_findings"}},
+        **extra,
     )
 
     usage = response.usage
