@@ -64,7 +64,11 @@ class SseMcpClient:
                     self._connected.set()          # unblock connect()
                     await self._close_event.wait() # hold until close() signals
         except Exception as exc:
-            self._connect_error = exc
+            # anyio wraps TaskGroup failures in an ExceptionGroup; unwrap to expose root cause
+            if hasattr(exc, 'exceptions') and exc.exceptions:
+                self._connect_error = exc.exceptions[0]
+            else:
+                self._connect_error = exc
             self._connected.set()                  # unblock connect() with error
 
     # ------------------------------------------------------------------
