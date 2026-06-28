@@ -129,6 +129,10 @@ def triage_batch(tickets: list[Ticket]) -> list[TriageResult]:
                     summary=triage.summary,
                     clarifying_question=triage.clarifying_question,
                 ))
+            else:
+                existing_triage.verdict = triage.verdict.value
+                existing_triage.summary = triage.summary
+                existing_triage.clarifying_question = triage.clarifying_question
             existing_stage = session.query(StageCountRow).filter_by(
                 ticket_id=ticket.id, stage="triage"
             ).first()
@@ -139,6 +143,9 @@ def triage_batch(tickets: list[Ticket]) -> list[TriageResult]:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                 ))
+            else:
+                existing_stage.input_tokens = input_tokens
+                existing_stage.output_tokens = output_tokens
             results.append(triage)
 
         session.commit()
