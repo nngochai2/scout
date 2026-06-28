@@ -76,6 +76,13 @@ def triage_batch(tickets: list[Ticket]) -> list[TriageResult]:
                     extra["api_base"] = base_url
                     if "/" not in model:
                         model = f"openai/{model}"
+                    # litellm would look for OPENAI_API_KEY when model is openai/*;
+                    # pass the configured provider key explicitly instead.
+                    _KEY_MAP = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
+                                "deepseek": "DEEPSEEK_API_KEY", "moonshot": "MOONSHOT_API_KEY"}
+                    _key = os.getenv(_KEY_MAP.get(provider, ""), "")
+                    if _key:
+                        extra["api_key"] = _key
                 response = litellm.completion(
                     model=model,
                     max_tokens=512,
