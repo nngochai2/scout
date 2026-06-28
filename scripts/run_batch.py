@@ -27,12 +27,26 @@ from agent.mcp_clients.azure_devops import AzureDevOpsClient
 from ingestion.freshdesk import FreshdeskAdapter
 from ingestion.mock import MockAdapter, DEFAULT_FIXTURE_PATH
 
+import json
 import os
+from pathlib import Path
 
-_KG_URL  = os.getenv("KNOWLEDGE_GRAPH_URL", "http://127.0.0.1:8100/sse")
-_CG_URL  = os.getenv("CODE_GRAPH_URL",      "http://127.0.0.1:8101/sse")
-_ORA_URL = os.getenv("ORACLE_URL",          "http://127.0.0.1:8102/sse")
-_ADO_URL = os.getenv("AZURE_DEVOPS_URL",    "http://127.0.0.1:8103/sse")
+# MCP URLs: mcp_config.json (written by the dashboard) overrides env vars, which override defaults.
+_MCP_CONFIG_PATH = Path(__file__).parent.parent / "mcp_config.json"
+_mcp_cfg: dict = {}
+if _MCP_CONFIG_PATH.exists():
+    try:
+        _mcp_cfg = json.loads(_MCP_CONFIG_PATH.read_text())
+    except Exception:
+        pass
+
+def _mcp_url(key: str, env_var: str, default: str) -> str:
+    return _mcp_cfg.get(key) or os.getenv(env_var, default)
+
+_KG_URL  = _mcp_url("knowledge_graph", "KNOWLEDGE_GRAPH_URL", "http://127.0.0.1:8100/sse")
+_CG_URL  = _mcp_url("code_graph",      "CODE_GRAPH_URL",      "http://127.0.0.1:8101/sse")
+_ORA_URL = _mcp_url("oracle",          "ORACLE_URL",           "http://127.0.0.1:8102/sse")
+_ADO_URL = _mcp_url("azure_devops",    "AZURE_DEVOPS_URL",     "http://127.0.0.1:8103/sse")
 
 
 def main() -> None:
