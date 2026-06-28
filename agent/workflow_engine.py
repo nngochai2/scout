@@ -203,8 +203,11 @@ def _real_evaluate(ticket_context: str, node_label: str, tool_result: str) -> Ev
         f"## Tool: {node_label}\n{tool_result}"
     )
     extra = {}
-    if base_url := os.getenv("LLM_BASE_URL", ""):
+    base_url = os.getenv("LLM_BASE_URL", "")
+    if base_url:
         extra["api_base"] = base_url
+        if "/" not in model:
+            model = f"openai/{model}"
     response = litellm.completion(
         model=model,
         max_tokens=1024,

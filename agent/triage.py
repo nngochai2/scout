@@ -71,8 +71,11 @@ def triage_batch(tickets: list[Ticket]) -> list[TriageResult]:
 
             try:
                 extra = {}
-                if base_url := os.getenv("LLM_BASE_URL", ""):
+                base_url = os.getenv("LLM_BASE_URL", "")
+                if base_url:
                     extra["api_base"] = base_url
+                    if "/" not in model:
+                        model = f"openai/{model}"
                 response = litellm.completion(
                     model=model,
                     max_tokens=512,
