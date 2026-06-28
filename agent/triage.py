@@ -92,7 +92,11 @@ def triage_batch(tickets: list[Ticket]) -> list[TriageResult]:
                     ],
                     **extra,
                 )
-                raw_text = response.choices[0].message.content.strip()
+                msg = response.choices[0].message
+                raw_text = (msg.content or "").strip()
+                if not raw_text:
+                    print(f"  [{ticket.id}] WARNING: model returned empty content. Full message: {msg}")
+                    raise ValueError("model returned empty content")
                 if raw_text.startswith("```"):
                     raw_text = raw_text.split("```", 2)[1]
                     if raw_text.startswith("json"):
