@@ -994,7 +994,7 @@ function SettingsView({ onSaved }: { onSaved: (cfg: LlmConfig) => void }) {
     setFetchingModels(true)
     setError(null)
     try {
-      const r = await fetch(`${API}/llm/models?provider=${provider}`)
+      const r = await fetch(`${API}/llm/models?provider=${provider}&api_key=${encodeURIComponent(apiKey)}`)
       if (!r.ok) throw new Error(await r.text())
       const data = await r.json()
       setModels(data.models ?? [])
