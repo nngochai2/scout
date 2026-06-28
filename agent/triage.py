@@ -85,7 +85,7 @@ def triage_batch(tickets: list[Ticket]) -> list[TriageResult]:
                         extra["api_key"] = _key
                 response = litellm.completion(
                     model=model,
-                    max_tokens=512,
+                    max_tokens=4096,
                     messages=[
                         {"role": "system", "content": _SYSTEM},
                         {"role": "user", "content": _user_message(ticket)},

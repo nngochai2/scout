@@ -215,7 +215,7 @@ def _real_evaluate(ticket_context: str, node_label: str, tool_result: str) -> Ev
             extra["api_key"] = _key
     response = litellm.completion(
         model=model,
-        max_tokens=1024,
+        max_tokens=4096,
         messages=[
             {"role": "system", "content": _EVALUATE_SYSTEM},
             {"role": "user", "content": user_msg},
