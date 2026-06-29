@@ -8,7 +8,9 @@ The public interface is synchronous; threading bridges the async internals.
 """
 import asyncio
 import threading
+from urllib.parse import urlparse
 
+import httpx
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
@@ -56,8 +58,18 @@ class SseMcpClient:
         must happen within the same task.  Keeping everything here satisfies that.
         """
         self._close_event = asyncio.Event()
+        host = urlparse(self._url).hostname or ""
+
+        def _factory(headers=None, timeout=None, auth=None):
+            return httpx.AsyncClient(
+                headers=headers or {},
+                timeout=timeout,
+                auth=auth,
+                proxies={f"all://{host}": None} if host else {},
+            )
+
         try:
-            async with sse_client(self._url) as (read, write):
+            async with sse_client(self._url, httpx_client_factory=_factory) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     self._session = session
