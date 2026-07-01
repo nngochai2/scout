@@ -61,11 +61,12 @@ class SseMcpClient:
         host = urlparse(self._url).hostname or ""
 
         def _factory(headers=None, timeout=None, auth=None):
+            mounts = {f"all://{host}": httpx.AsyncHTTPTransport()} if host else {}
             return httpx.AsyncClient(
                 headers=headers or {},
                 timeout=timeout,
                 auth=auth,
-                proxies={f"all://{host}": None} if host else {},
+                mounts=mounts,
             )
 
         try:
