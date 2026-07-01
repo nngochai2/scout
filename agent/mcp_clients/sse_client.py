@@ -123,6 +123,25 @@ class SseMcpClient:
         texts = [c.text for c in result.content if hasattr(c, "text")]
         return "\n\n".join(texts) if texts else "(no results)"
 
+    def list_tools(self) -> list[dict]:
+        """Return the tool schemas the connected server actually exposes.
+
+        Filtered to this client's allowlist, so callers only ever see tools
+        that are both real (confirmed by the live server) and permitted —
+        never a guessed name the server doesn't implement.
+
+        Raises:
+            RuntimeError: if ``connect()`` has not been called.
+        """
+        if self._session is None:
+            raise RuntimeError("Call connect() before list_tools().")
+        result = self._run(self._session.list_tools())
+        return [
+            {"name": t.name, "description": t.description or "", "inputSchema": t.inputSchema}
+            for t in result.tools
+            if t.name in self._allowed
+        ]
+
     def close(self) -> None:
         """Signal the lifecycle coroutine to shut down and stop the event loop."""
         if self._close_event is not None:

@@ -12,6 +12,7 @@ from typing import Callable
 import litellm
 
 from agent.flow import BranchEdge, InvestigationFlow
+from agent.llm_config import resolve as resolve_llm
 from agent.models import (
     Confidence,
     Diagnosis,
@@ -197,22 +198,11 @@ Be conservative — only rate HIGH if the tool result directly explains the issu
 
 def _real_evaluate(ticket_context: str, node_label: str, tool_result: str) -> EvaluateResult:
     """Production Evaluate step: single LiteLLM call to extract structured findings."""
-    model = os.getenv("LLM_MODEL", "")
     user_msg = (
         f"## Ticket\n{ticket_context}\n\n"
         f"## Tool: {node_label}\n{tool_result}"
     )
-    extra = {}
-    base_url = os.getenv("LLM_BASE_URL", "")
-    if base_url:
-        extra["api_base"] = base_url
-        if "/" not in model:
-            model = f"openai/{model}"
-        _KEY_MAP = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
-                    "deepseek": "DEEPSEEK_API_KEY", "moonshot": "MOONSHOT_API_KEY"}
-        _key = os.getenv(_KEY_MAP.get(os.getenv("LLM_PROVIDER", ""), ""), "")
-        if _key:
-            extra["api_key"] = _key
+    model, extra = resolve_llm(os.getenv("LLM_MODEL", ""))
     response = litellm.completion(
         model=model,
         max_tokens=16384,

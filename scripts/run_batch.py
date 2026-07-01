@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from agent.database import init_db, engine, TicketRow, DiagnosisRow, EvidenceItemRow, StageCountRow
 from agent.flow import load_flow, DEFAULT_FLOW_PATH
+from agent.mcp_dispatch import select_tool_call
 from agent.triage import triage_batch
 from agent.workflow_engine import WorkflowEngine
 from agent.models import TriageVerdict
@@ -145,31 +146,26 @@ def main() -> None:
             print("Start all required NAA MCP servers before running the batch.")
             sys.exit(1)
 
-    # Build mcp_fns: each fn passes ticket context to the MCP and returns its text result
-    def make_mcp_fn(client):
-        def _fn(ticket_context: str) -> str:
-            # Use a generic search query built from the ticket context
-            return client.call_tool(
-                _default_tool_for(client),
-                {"query": ticket_context[:500]},
-            )
-        return _fn
+    # Build mcp_fns: introspect each server's real allowed tools once, then per
+    # ticket ask the LLM to pick one and build arguments matching its actual
+    # schema, rather than guessing a fixed tool name and argument shape.
+    _llm_model = os.getenv("LLM_MODEL", "")
 
-    def _default_tool_for(client) -> str:
-        """Pick a sensible default read tool for each MCP type."""
-        from agent.mcp_clients.knowledge_graph import KnowledgeGraphClient as KG
-        from agent.mcp_clients.code_graph import CodeGraphClient as CG
-        from agent.mcp_clients.oracle import OracleClient as ORA
-        from agent.mcp_clients.azure_devops import AzureDevOpsClient as ADO
-        if isinstance(client, KG):
-            return "search_notes"
-        if isinstance(client, CG):
-            return "search_code"
-        if isinstance(client, ORA):
-            return "query"
-        if isinstance(client, ADO):
-            return "search_work_items"
-        return list(client._allowed)[0]
+    def make_mcp_fn(client):
+        tool_schemas = client.list_tools()
+
+        def _fn(ticket_context: str) -> str:
+            if not tool_schemas:
+                return "(no usable read-only tool exposed by this MCP server)"
+            plan = select_tool_call(tool_schemas, ticket_context, _llm_model)
+            if plan is None:
+                return "(no usable read-only tool exposed by this MCP server)"
+            tool_name, tool_args = plan
+            try:
+                return client.call_tool(tool_name, tool_args)
+            except Exception as exc:
+                return f"(tool call to {tool_name} failed: {exc})"
+        return _fn
 
     mcp_fns = {name: make_mcp_fn(c) for name, c in clients.items()}
 

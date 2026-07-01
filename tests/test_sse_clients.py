@@ -19,6 +19,17 @@ def test_disallowed_tool_raises_permission_error():
 
 
 # ---------------------------------------------------------------------------
+# Behavior: list_tools() before connect() raises RuntimeError
+# ---------------------------------------------------------------------------
+
+def test_list_tools_before_connect_raises_runtime_error():
+    from agent.mcp_clients.sse_client import SseMcpClient
+    client = SseMcpClient(url="http://127.0.0.1:19999/sse", read_only_tools=["ping"])
+    with pytest.raises(RuntimeError):
+        client.list_tools()
+
+
+# ---------------------------------------------------------------------------
 # Behavior 2: unreachable URL raises ConnectionError containing the URL
 # ---------------------------------------------------------------------------
 
@@ -86,6 +97,11 @@ def mcp_sse_server():
         """Return a fixed string."""
         return "pong"
 
+    @mcp_app.tool()
+    def write_note(text: str) -> str:
+        """A write tool that must never be selectable by a read-only client."""
+        return "saved"
+
     port = _find_free_port()
 
     # Try different ASGI app extraction methods across mcp SDK versions
@@ -136,3 +152,18 @@ def test_allowed_tool_call_returns_string(mcp_sse_server):
         result = client.call_tool("ping", {})
     assert isinstance(result, str)
     assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# Behavior: list_tools() filters the server's real tool list to the allowlist
+# ---------------------------------------------------------------------------
+
+def test_list_tools_filters_to_allowlist(mcp_sse_server):
+    from agent.mcp_clients.sse_client import SseMcpClient
+    url = f"{mcp_sse_server}/sse"
+    # Server exposes both "ping" and "write_note"; only "ping" is allowlisted.
+    with SseMcpClient(url=url, read_only_tools=["ping"]) as client:
+        tools = client.list_tools()
+    names = [t["name"] for t in tools]
+    assert names == ["ping"]
+    assert "inputSchema" in tools[0]
