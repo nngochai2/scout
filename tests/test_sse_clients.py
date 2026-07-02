@@ -1,4 +1,9 @@
-"""Tests for SSE MCP client wrappers — behaviors 1-5."""
+"""Tests for SSE MCP client wrappers.
+
+The allowlist is no longer a hand-maintained constant per client — it's
+discovered at connect() time from the server's own declared
+ToolAnnotations.readOnlyHint (see agent/mcp_clients/sse_client.py).
+"""
 import re
 import socket
 import threading
@@ -8,71 +13,30 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Behavior 1: disallowed tool raises PermissionError before any network call
-# ---------------------------------------------------------------------------
-
-def test_disallowed_tool_raises_permission_error():
-    from agent.mcp_clients.sse_client import SseMcpClient
-    client = SseMcpClient(url="http://127.0.0.1:19999/sse", read_only_tools=["ping"])
-    with pytest.raises(PermissionError):
-        client.call_tool("write_note", {})
-
-
-# ---------------------------------------------------------------------------
 # Behavior: list_tools() before connect() raises RuntimeError
 # ---------------------------------------------------------------------------
 
 def test_list_tools_before_connect_raises_runtime_error():
     from agent.mcp_clients.sse_client import SseMcpClient
-    client = SseMcpClient(url="http://127.0.0.1:19999/sse", read_only_tools=["ping"])
+    client = SseMcpClient(url="http://127.0.0.1:19999/sse")
     with pytest.raises(RuntimeError):
         client.list_tools()
 
 
 # ---------------------------------------------------------------------------
-# Behavior 2: unreachable URL raises ConnectionError containing the URL
+# Behavior: unreachable URL raises ConnectionError containing the URL
 # ---------------------------------------------------------------------------
 
 def test_connect_to_unreachable_url_raises_connection_error_with_url():
     from agent.mcp_clients.sse_client import SseMcpClient
     url = "http://127.0.0.1:19999/sse"
-    client = SseMcpClient(url=url, read_only_tools=["ping"])
+    client = SseMcpClient(url=url)
     with pytest.raises(ConnectionError, match=re.escape(url)):
         client.connect()
 
 
 # ---------------------------------------------------------------------------
-# Behavior 3: KnowledgeGraphClient blocks known write tools
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("write_tool", [
-    "stage_note",
-    "approve_staged_note",
-    "commit_approved_notes",
-])
-def test_knowledge_graph_client_blocks_write_tools(write_tool):
-    from agent.mcp_clients.knowledge_graph import KnowledgeGraphClient
-    client = KnowledgeGraphClient(url="http://127.0.0.1:19999/sse")
-    with pytest.raises(PermissionError):
-        client.call_tool(write_tool, {})
-
-
-# ---------------------------------------------------------------------------
-# Behavior 4: all four concrete wrappers importable with non-empty allowlists
-# ---------------------------------------------------------------------------
-
-def test_all_concrete_wrappers_have_non_empty_allowlists():
-    from agent.mcp_clients.knowledge_graph import KnowledgeGraphClient
-    from agent.mcp_clients.code_graph import CodeGraphClient
-    from agent.mcp_clients.oracle import OracleClient
-    from agent.mcp_clients.azure_devops import AzureDevOpsClient
-
-    for Client in (KnowledgeGraphClient, CodeGraphClient, OracleClient, AzureDevOpsClient):
-        assert len(Client.ALLOWED_TOOLS) > 0, f"{Client.__name__}.ALLOWED_TOOLS must not be empty"
-
-
-# ---------------------------------------------------------------------------
-# Behavior 5: allowed tool call returns a string (in-process FastMCP SSE server)
+# In-process FastMCP SSE server used by the behaviors below.
 # ---------------------------------------------------------------------------
 
 def _find_free_port() -> int:
@@ -85,22 +49,37 @@ def _find_free_port() -> int:
 def mcp_sse_server():
     """Spin up a minimal FastMCP SSE server in a background thread.
 
+    Exposes tools covering every readOnlyHint state a real NAA server can
+    produce: explicitly read-only, explicitly not read-only, and (the
+    default today, before annotations are added) unannotated entirely.
+
     Yields the base URL (``http://127.0.0.1:<port>``).
     """
     import uvicorn
     from mcp.server.fastmcp import FastMCP
+    from mcp.types import ToolAnnotations
 
     mcp_app = FastMCP("test-server")
 
-    @mcp_app.tool()
+    @mcp_app.tool(annotations=ToolAnnotations(readOnlyHint=True))
     def ping() -> str:
         """Return a fixed string."""
         return "pong"
 
-    @mcp_app.tool()
+    @mcp_app.tool(annotations=ToolAnnotations(readOnlyHint=False))
     def write_note(text: str) -> str:
-        """A write tool that must never be selectable by a read-only client."""
+        """A tool the server explicitly marks as not read-only."""
         return "saved"
+
+    @mcp_app.tool()
+    def unannotated_tool() -> str:
+        """A tool with no annotations at all — must be blocked (fail closed)."""
+        return "should never run"
+
+    @mcp_app.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def failing_tool() -> str:
+        """A read-only-declared tool that always raises server-side."""
+        raise ValueError("boom")
 
     port = _find_free_port()
 
@@ -145,25 +124,55 @@ def mcp_sse_server():
     t.join(timeout=3)
 
 
+# ---------------------------------------------------------------------------
+# Behavior: only tools the server declared readOnlyHint=True are callable —
+# an explicit readOnlyHint=False and a missing annotation are both blocked.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("tool_name", ["write_note", "unannotated_tool"])
+def test_call_tool_raises_permission_error_for_non_readonly_tool(mcp_sse_server, tool_name):
+    from agent.mcp_clients.sse_client import SseMcpClient
+    url = f"{mcp_sse_server}/sse"
+    with SseMcpClient(url=url) as client:
+        with pytest.raises(PermissionError):
+            client.call_tool(tool_name, {})
+
+
+# ---------------------------------------------------------------------------
+# Behavior: list_tools() returns only server-declared read-only tools
+# ---------------------------------------------------------------------------
+
+def test_list_tools_returns_only_readonly_declared_tools(mcp_sse_server):
+    from agent.mcp_clients.sse_client import SseMcpClient
+    url = f"{mcp_sse_server}/sse"
+    with SseMcpClient(url=url) as client:
+        tools = client.list_tools()
+    names = {t["name"] for t in tools}
+    assert names == {"ping", "failing_tool"}
+    assert "inputSchema" in tools[0]
+
+
+# ---------------------------------------------------------------------------
+# Behavior: allowed tool call returns a string
+# ---------------------------------------------------------------------------
+
 def test_allowed_tool_call_returns_string(mcp_sse_server):
     from agent.mcp_clients.sse_client import SseMcpClient
     url = f"{mcp_sse_server}/sse"
-    with SseMcpClient(url=url, read_only_tools=["ping"]) as client:
+    with SseMcpClient(url=url) as client:
         result = client.call_tool("ping", {})
     assert isinstance(result, str)
     assert len(result) > 0
 
 
 # ---------------------------------------------------------------------------
-# Behavior: list_tools() filters the server's real tool list to the allowlist
+# Behavior: call_tool() raises when the server reports isError=True, instead
+# of silently returning the error text as if it were a normal result.
 # ---------------------------------------------------------------------------
 
-def test_list_tools_filters_to_allowlist(mcp_sse_server):
+def test_call_tool_raises_when_server_reports_error(mcp_sse_server):
     from agent.mcp_clients.sse_client import SseMcpClient
     url = f"{mcp_sse_server}/sse"
-    # Server exposes both "ping" and "write_note"; only "ping" is allowlisted.
-    with SseMcpClient(url=url, read_only_tools=["ping"]) as client:
-        tools = client.list_tools()
-    names = [t["name"] for t in tools]
-    assert names == ["ping"]
-    assert "inputSchema" in tools[0]
+    with SseMcpClient(url=url) as client:
+        with pytest.raises(RuntimeError, match="boom"):
+            client.call_tool("failing_tool", {})

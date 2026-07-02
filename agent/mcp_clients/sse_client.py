@@ -18,18 +18,24 @@ from mcp.client.sse import sse_client
 class SseMcpClient:
     """Generic read-only sync client for an SSE MCP server.
 
-    Only tools in ``read_only_tools`` may be called; any other name raises
-    ``PermissionError`` immediately, before any network activity.
+    The allowlist is not hand-maintained — it's discovered at ``connect()``
+    time from the server's own declared ``ToolAnnotations.readOnlyHint`` on
+    each tool (see the MCP spec). A tool is only callable if the server
+    explicitly marked it ``readOnlyHint=True``; anything unset or false is
+    treated as unsafe (fail closed), so a server author forgetting to
+    annotate a new mutating tool blocks it by default instead of exposing it.
+    This also means Scout never has to hardcode or guess tool names per
+    server — it can only ever call a tool name the connected server actually
+    has, since the allowlist is a filtered view of the server's live tool list.
 
     Usage::
 
-        with SseMcpClient("http://host/sse", ["search_notes"]) as c:
+        with SseMcpClient("http://host/sse") as c:
             result = c.call_tool("search_notes", {"query": "auth"})
     """
 
-    def __init__(self, url: str, read_only_tools: list[str], connect_timeout: float = 10.0) -> None:
+    def __init__(self, url: str, connect_timeout: float = 10.0) -> None:
         self._url = url
-        self._allowed: frozenset[str] = frozenset(read_only_tools)
         self._connect_timeout = connect_timeout
 
         self._loop = asyncio.new_event_loop()
@@ -42,6 +48,10 @@ class SseMcpClient:
         # asyncio.Event created inside the background loop in _session_lifecycle
         self._close_event: asyncio.Event | None = None
         self._lifecycle_future = None  # concurrent.futures.Future for the lifecycle task
+
+        # Populated at connect() time from the server's declared annotations —
+        # see _fetch_read_only_tools(). None means "not connected yet".
+        self._read_only_tools: list[dict] | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -89,7 +99,8 @@ class SseMcpClient:
     # ------------------------------------------------------------------
 
     def connect(self) -> None:
-        """Open the SSE connection and initialise the MCP session.
+        """Open the SSE connection, initialise the MCP session, and discover
+        which of the server's tools are safe to call.
 
         Raises:
             ConnectionError: if the server is unreachable, with the URL in
@@ -104,43 +115,56 @@ class SseMcpClient:
             raise ConnectionError(
                 f"Cannot connect to MCP server at {self._url}: {err}"
             ) from (self._connect_error or None)
+        self._read_only_tools = self._fetch_read_only_tools()
+
+    def _fetch_read_only_tools(self) -> list[dict]:
+        """Query the live server and keep only tools it declared read-only.
+
+        A tool is kept only if the server set ``annotations.readOnlyHint =
+        True``. Missing annotations or ``readOnlyHint=False`` are both
+        treated as unsafe — Scout never infers safety from a tool's name.
+        """
+        result = self._run(self._session.list_tools())
+        return [
+            {"name": t.name, "description": t.description or "", "inputSchema": t.inputSchema}
+            for t in result.tools
+            if t.annotations is not None and t.annotations.readOnlyHint is True
+        ]
 
     def call_tool(self, name: str, args: dict) -> str:
         """Call *name* on the remote MCP server and return the text result.
 
         Raises:
-            PermissionError: if *name* is not in the allowlist.
-            RuntimeError:    if ``connect()`` has not been called.
+            PermissionError: if *name* is not one of the tools the server
+                declared read-only.
+            RuntimeError:    if ``connect()`` has not been called, or if the
+                server reports ``isError`` (a tool-side failure) rather than
+                letting that error text pass through as if it were evidence.
         """
-        if name not in self._allowed:
-            raise PermissionError(
-                f"Tool '{name}' is not in the read-only allowlist for this client. "
-                f"Allowed: {sorted(self._allowed)}"
-            )
-        if self._session is None:
+        if self._read_only_tools is None:
             raise RuntimeError("Call connect() before call_tool().")
+        allowed_names = {t["name"] for t in self._read_only_tools}
+        if name not in allowed_names:
+            raise PermissionError(
+                f"Tool '{name}' is not declared read-only by this server. "
+                f"Allowed: {sorted(allowed_names)}"
+            )
         result = self._run(self._session.call_tool(name, args))
         texts = [c.text for c in result.content if hasattr(c, "text")]
-        return "\n\n".join(texts) if texts else "(no results)"
+        text = "\n\n".join(texts) if texts else "(no results)"
+        if result.isError:
+            raise RuntimeError(text)
+        return text
 
     def list_tools(self) -> list[dict]:
-        """Return the tool schemas the connected server actually exposes.
-
-        Filtered to this client's allowlist, so callers only ever see tools
-        that are both real (confirmed by the live server) and permitted —
-        never a guessed name the server doesn't implement.
+        """Return the read-only tool schemas discovered at ``connect()`` time.
 
         Raises:
             RuntimeError: if ``connect()`` has not been called.
         """
-        if self._session is None:
+        if self._read_only_tools is None:
             raise RuntimeError("Call connect() before list_tools().")
-        result = self._run(self._session.list_tools())
-        return [
-            {"name": t.name, "description": t.description or "", "inputSchema": t.inputSchema}
-            for t in result.tools
-            if t.name in self._allowed
-        ]
+        return self._read_only_tools
 
     def close(self) -> None:
         """Signal the lifecycle coroutine to shut down and stop the event loop."""
